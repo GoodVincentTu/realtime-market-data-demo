@@ -1,0 +1,136 @@
+name: orchestrator-api-ci
+
+on:
+  push:
+    paths:
+      - "services/orchestrator-api/**"
+      - "deploy/docker/orchestrator-api/**"
+      - "deploy/docker/docker-compose.yaml"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "package.json"
+      - ".github/workflows/orchestrator-api-ci.yml"
+  pull_request:
+    paths:
+      - "services/orchestrator-api/**"
+      - "deploy/docker/orchestrator-api/**"
+      - "deploy/docker/docker-compose.yaml"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "package.json"
+      - ".github/workflows/orchestrator-api-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  test:
+    name: Unit + Integration Tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        ports: ["5432:5432"]
+        env:
+          POSTGRES_PASSWORD: app
+          POSTGRES_USER: app
+          POSTGRES_DB: market
+        options: >-
+          --health-cmd "pg_isready -U app -d market"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping || exit 1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://app:app@localhost:5432/market
+      REDIS_URL: redis://localhost:6379
+      API_KEY: dev-key
+      API_PREFIX: /api/v1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PNPM
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.7.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare test env file
+        run: |
+          cat <<EOF > services/orchestrator-api/.env.test
+          NODE_ENV=test
+          DATABASE_URL=${DATABASE_URL}
+          REDIS_URL=${REDIS_URL}
+          API_KEY=${API_KEY}
+          API_PREFIX=${API_PREFIX}
+          QUEUE_PREFIX=realtime
+          TICKS_QUEUE=ticks
+          PUBSUB_CHANNEL=ch:ticks
+          EOF
+
+      - name: Build
+        run: pnpm --filter @realtime/orchestrator-api build
+
+      - name: Run DB migrations (up)
+        run: pnpm --filter @realtime/orchestrator-api exec node-pg-migrate up -m migrations
+
+      - name: Unit tests
+        run: pnpm --filter @realtime/orchestrator-api test:unit -- --reporter=dot
+
+      - name: Integration tests
+        run: pnpm --filter @realtime/orchestrator-api test:integration -- --reporter=dot
+
+  docker:
+    name: Build & Push image
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name != 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute lowercased image name
+        run: |
+          OWNER_LC=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          REPO_LC=$(echo "${GITHUB_REPOSITORY##*/}" | tr '[:upper:]' '[:lower:]')
+          echo "IMAGE=ghcr.io/${OWNER_LC}/${REPO_LC}-orchestrator-api" >> $GITHUB_ENV
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & Push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/orchestrator-api/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
