@@ -8,8 +8,10 @@ import { startOpsServer } from './server/http.js';
 
 const worker = startWorker();
 
-// Optionally start a tiny ops server for liveness/readiness if OPS_PORT is set
-const opsPort = Number(process.env.OPS_PORT || 0);
+// Optionally start a tiny ops server for liveness/readiness if OPS_PORT or PORT is set
+const rawOpsPort = process.env.OPS_PORT ?? process.env.PORT ?? '';
+const parsedOpsPort = Number(rawOpsPort);
+const opsPort = Number.isFinite(parsedOpsPort) ? parsedOpsPort : 0;
 const opsServer = opsPort ? startOpsServer(opsPort) : null;
 
 logger.info(
