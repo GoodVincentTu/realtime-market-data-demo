@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: realtime-gateway }
+spec:
+  replicas: {{ .Values.realtimeGateway.replicas }}
+  selector: { matchLabels: { app: realtime-gateway } }
+  template:
+    metadata: { labels: { app: realtime-gateway } }
+    spec:
+      containers:
+        - name: realtime-gateway
+          image: {{ .Values.images.realtimeGateway }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          env:
+            - { name: TZ, value: {{ .Values.env.tz | quote }} }
+            - { name: PORT, value: {{ .Values.realtimeGateway.port | quote }} }
+            - { name: REDIS_URL, value: "redis://redis:6379" }
+            - { name: ALLOW_ORIGINS, value: {{ .Values.env.corsAllow | quote }} }
+          ports: [ { containerPort: {{ .Values.realtimeGateway.port }} } ]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: realtime-gateway }
+spec:
+  selector: { app: realtime-gateway }
+  ports: [ { name: http, port: {{ .Values.realtimeGateway.port }}, targetPort: {{ .Values.realtimeGateway.port }} } ]

@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: orchestrator-api }
+spec:
+  replicas: {{ .Values.orchestratorApi.replicas }}
+  selector: { matchLabels: { app: orchestrator-api } }
+  template:
+    metadata: { labels: { app: orchestrator-api } }
+    spec:
+      containers:
+        - name: orchestrator-api
+          image: {{ .Values.images.orchestratorApi }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          env:
+            - { name: TZ, value: {{ .Values.env.tz | quote }} }
+            - { name: PORT, value: {{ .Values.orchestratorApi.port | quote }} }
+            - { name: DATABASE_URL, value: "postgres://{{ .Values.postgres.user }}:{{ .Values.postgres.password }}@postgres:5432/{{ .Values.postgres.db }}" }
+            - { name: REDIS_URL, value: "redis://redis:6379" }
+            - { name: API_KEYS, value: {{ .Values.env.apiKeys | quote }} }
+            - { name: CORS_ALLOW_ORIGINS, value: {{ .Values.env.corsAllow | quote }} }
+          ports: [ { containerPort: {{ .Values.orchestratorApi.port }} } ]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: orchestrator-api }
+spec:
+  selector: { app: orchestrator-api }
+  ports: [ { name: http, port: {{ .Values.orchestratorApi.port }}, targetPort: {{ .Values.orchestratorApi.port }} } ]

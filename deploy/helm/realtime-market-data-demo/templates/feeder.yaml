@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: feeder }
+spec:
+  replicas: {{ .Values.feeder.replicas }}
+  selector: { matchLabels: { app: feeder } }
+  template:
+    metadata: { labels: { app: feeder } }
+    spec:
+      containers:
+        - name: feeder
+          image: {{ .Values.images.feeder }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          env:
+            - { name: TZ, value: {{ .Values.env.tz | quote }} }
+            - { name: ORCH_API_BASE, value: "http://orchestrator-api:{{ .Values.orchestratorApi.port }}/api/v1" }
+            - { name: ORCH_API_KEY, value: {{ .Values.env.apiKeys | quote }} }
+            - { name: FEED_SYMBOLS, value: {{ .Values.feeder.env.symbols | quote }} }
+            - { name: FEED_INTERVAL_MS, value: {{ .Values.feeder.env.intervalMs | quote }} }

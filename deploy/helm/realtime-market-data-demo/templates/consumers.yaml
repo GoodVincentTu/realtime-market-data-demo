@@ -1,0 +1,18 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: consumers }
+spec:
+  replicas: {{ .Values.consumers.calcB.replicas }}
+  selector: { matchLabels: { app: consumers } }
+  template:
+    metadata: { labels: { app: consumers } }
+    spec:
+      containers:
+        - name: consumers
+          image: {{ .Values.images.consumers }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          env:
+            - { name: TZ, value: {{ .Values.env.tz | quote }} }
+            - { name: WORKER, value: "calc" }
+            - { name: DATABASE_URL, value: "postgres://{{ .Values.postgres.user }}:{{ .Values.postgres.password }}@postgres:5432/{{ .Values.postgres.db }}" }
+            - { name: REDIS_URL, value: "redis://redis:6379" }
