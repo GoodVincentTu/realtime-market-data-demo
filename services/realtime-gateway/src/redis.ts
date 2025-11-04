@@ -21,8 +21,15 @@ export async function subscribe(channel: string, handler: (msg: string) => void)
 export async function redisHealth(): Promise<boolean> {
   try {
     const pong = await redisSub.ping();
-    return pong === 'PONG';
-  } catch {
+    const normalized = Array.isArray(pong) ? pong[0] : pong;
+    const ok =
+      typeof normalized === 'string' && normalized.toUpperCase() === 'PONG';
+    if (!ok) {
+      logger.warn({ pong }, 'redis ping returned unexpected response');
+    }
+    return ok;
+  } catch (err) {
+    logger.warn({ err }, 'redis ping failed');
     return false;
   }
 }
