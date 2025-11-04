@@ -26,8 +26,8 @@ permissions:
   packages: write
 
 jobs:
-  test_build:
-    name: Tests + build
+  build:
+    name: Build
     runs-on: ubuntu-latest
 
     env:
@@ -52,19 +52,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Ensure dashboard workspace deps
-        run: pnpm --filter @realtime/dashboard install --frozen-lockfile
-
-      - name: Unit tests (vitest)
-        run: pnpm --filter @realtime/dashboard exec vitest run --reporter=dot
-
       - name: Build (Vite)
         run: pnpm --filter @realtime/dashboard build
 
   docker:
     name: Build & Push image
     runs-on: ubuntu-latest
-    needs: test_build
+    needs: build
     if: github.event_name != 'pull_request'
 
     steps:

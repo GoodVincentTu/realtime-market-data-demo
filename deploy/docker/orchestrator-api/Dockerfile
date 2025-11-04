@@ -15,7 +15,7 @@ FROM base AS build
 COPY services/orchestrator-api services/orchestrator-api
 RUN pnpm -C services/orchestrator-api build
 RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
-    pnpm --filter ./services/orchestrator-api... deploy --prod /out
+    pnpm --filter ./services/orchestrator-api... deploy --prod --legacy /out
 
 FROM node:${NODE_VERSION}-alpine
 ENV NODE_ENV=production

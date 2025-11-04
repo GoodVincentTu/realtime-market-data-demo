@@ -13,7 +13,7 @@ FROM base AS build
 COPY services/feeder services/feeder
 RUN pnpm -C services/feeder build
 RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
-    pnpm --filter ./services/feeder... deploy --prod /out
+    pnpm --filter ./services/feeder... deploy --prod --legacy /out
 
 FROM node:${NODE_VERSION}-alpine
 ENV NODE_ENV=production

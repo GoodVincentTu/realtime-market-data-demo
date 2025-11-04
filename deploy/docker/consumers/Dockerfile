@@ -20,7 +20,7 @@ COPY services/consumers services/consumers
 RUN pnpm -C services/consumers build
 # prune deps for runtime
 RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
-    pnpm --filter ./services/consumers... deploy --prod /out
+    pnpm --filter ./services/consumers... deploy --prod --legacy /out
 
 FROM node:${NODE_VERSION}-alpine AS runtime
 ENV NODE_ENV=production

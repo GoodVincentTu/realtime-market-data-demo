@@ -12,7 +12,7 @@ FROM base AS build
 COPY services/realtime-gateway services/realtime-gateway
 RUN pnpm -C services/realtime-gateway build
 RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
-    pnpm --filter ./services/realtime-gateway... deploy --prod /out
+    pnpm --filter ./services/realtime-gateway... deploy --prod --legacy /out
 
 FROM node:${NODE_VERSION}-alpine
 ENV NODE_ENV=production
