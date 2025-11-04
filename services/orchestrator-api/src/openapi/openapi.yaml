@@ -1,0 +1,429 @@
+openapi: 3.0.3
+info:
+  title: Orchestrator API (Realtime Market Data Demo)
+  version: 0.2.0
+  description: |
+    Query + operational endpoints for orchestrator-api, and write-path webhooks.
+
+    **Auth model**
+    - Public **GET** endpoints: **no auth**.
+    - **POST /webhooks/**: require `x-api-key` header (`ApiKeyAuth`).
+
+servers:
+  - url: http://localhost:3030/api/v1
+    description: Local dev
+
+tags:
+  - name: Health
+  - name: Symbols
+  - name: Ticks
+  - name: Metrics
+  - name: Webhooks
+  - name: Ops
+
+paths:
+  /health/liveness:
+    get:
+      tags: [Health]
+      summary: Liveness
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Liveness' }
+              examples:
+                ok: { value: { ok: true } }
+
+  /health/readiness:
+    get:
+      tags: [Health]
+      summary: Readiness (DB/Redis checks)
+      responses:
+        '200':
+          description: Ready or not ready
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Readiness' }
+              examples:
+                ready:
+                  value:
+                    status: ready
+                    checks: { db: ok, redis: ok }
+        '503':
+          description: Not ready
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Readiness' }
+
+  /ops/metrics:
+    get:
+      tags: [Ops]
+      summary: Prometheus metrics
+      responses:
+        '200':
+          description: Prometheus text format
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /symbols:
+    get:
+      tags: [Symbols]
+      summary: List active symbols
+      parameters:
+        - in: query
+          name: active
+          required: false
+          schema: { type: boolean }
+          description: Filter by active=true (default true in service)
+      responses:
+        '200':
+          description: List of symbols
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Symbol' }
+              examples:
+                sample:
+                  value:
+                    - symbol: BTCUSDT
+                      base: BTC
+                      quote: USDT
+                      active: true
+                    - symbol: ETHUSDT
+                      base: ETH
+                      quote: USDT
+                      active: true
+
+  /ticks/{symbol}:
+    get:
+      tags: [Ticks]
+      summary: Latest tick for a symbol
+      parameters:
+        - $ref: '#/components/parameters/SymbolParam'
+      responses:
+        '200':
+          description: Latest tick
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tick' }
+              examples:
+                sample:
+                  value: { symbol: BTCUSDT, price: 68234.12, ts: 1730425220, volume: 0.42 }
+        '404':
+          description: Symbol not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /ticks/{symbol}/history:
+    get:
+      tags: [Ticks]
+      summary: OHLC-1m history (ascending) with volume & SMA10
+      description: |
+        Returns **1-minute aggregated candles** (ascending by `ts`).
+        - Each item includes: `open`, `high`, `low`, `close`, `volume`, `sma10`.
+        - Pagination: use `before` (**epoch seconds**, non-inclusive upper bound).
+        - Legacy `cursor` accepted with the same meaning as `before`.
+      parameters:
+        - $ref: '#/components/parameters/SymbolParam'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Before'
+        - $ref: '#/components/parameters/CursorLegacy'
+      responses:
+        '200':
+          description: Candle history page (ascending)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TickHistoryResponse' }
+              examples:
+                sample:
+                  value:
+                    items:
+                      - { symbol: BTCUSDT, ts: 1762144800, open: 67950.1, high: 67970.0, low: 67940.0, close: 67955.2, volume: 1.2345, sma10: 67952.0 }
+                      - { symbol: BTCUSDT, ts: 1762144860, open: 67955.2, high: 67960.0, low: 67930.1, close: 67934.6, volume: 0.9852, sma10: 67948.9 }
+                    nextCursor: 1762144860
+        '404':
+          description: Symbol not found / no data
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /metrics/{symbol}:
+    get:
+      tags: [Metrics]
+      summary: Aggregated metrics window (latest 1m)
+      parameters:
+        - $ref: '#/components/parameters/SymbolParam'
+      responses:
+        '200':
+          description: Metrics snapshot
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Metrics' }
+              examples:
+                sample:
+                  value:
+                    symbol: BTCUSDT
+                    windowStart: 1762144860
+                    windowEnd: 1762144919
+                    count: 1242
+                    min: 67512.02
+                    max: 68320.55
+                    avg: 67910.14
+                    vwap: 67930.77
+                    volume: 152.41
+                    last: 68234.12
+        '404':
+          description: Symbol not found / no data
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /webhooks/symbols:
+    post:
+      tags: [Webhooks]
+      summary: Upsert symbols (write path)
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SymbolUpsertRequest' }
+            examples:
+              sample:
+                value:
+                  items:
+                    - { symbol: BTCUSDT, base: BTC, quote: USDT, active: true }
+      responses:
+        '202':
+          description: Accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SymbolUpsertResponse' }
+        '401':
+          description: Missing/invalid x-api-key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /webhooks/ticks:
+    post:
+      tags: [Webhooks]
+      summary: Bulk ticks ingest (write path)
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TicksIngestRequest' }
+            examples:
+              sample:
+                value:
+                  source: binance
+                  items:
+                    - idempotencyKey: binance:BTCUSDT:1730425200
+                      symbol: BTCUSDT
+                      price: 68234.12
+                      ts: 1730425200
+                      volume: 0.35
+      responses:
+        '202':
+          description: Accepted (deduped and queued)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TicksIngestResponse' }
+              examples:
+                sample:
+                  value: { accepted: 1, duplicates: 0, queued: 1, rejected: 0, skipped: 0 }
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          description: Missing/invalid x-api-key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: Provide the API key (e.g., `dev-key`) to call POST /webhooks/*
+
+  parameters:
+    SymbolParam:
+      name: symbol
+      in: path
+      required: true
+      schema: { type: string, example: BTCUSDT }
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 1000, default: 200 }
+      description: Number of candles to return (ascending)
+    Before:
+      name: before
+      in: query
+      required: false
+      description: Return only items with `ts < before` (epoch seconds). Defaults to now+1s.
+      schema:
+        type: integer
+        example: 1762144920
+    CursorLegacy:
+      name: cursor
+      in: query
+      required: false
+      description: Legacy pagination cursor; treated identically to `before`.
+      schema:
+        oneOf:
+          - { type: string, example: "1762144920" }
+          - { type: integer, example: 1762144920 }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+          required: [code, message]
+      required: [error]
+
+    Liveness:
+      type: object
+      properties: { ok: { type: boolean } }
+      required: [ok]
+
+    Readiness:
+      type: object
+      properties:
+        status: { type: string, enum: [ready, not_ready] }
+        checks:
+          type: object
+          properties:
+            db: { type: string, enum: [ok, fail] }
+            redis: { type: string, enum: [ok, fail] }
+      required: [status, checks]
+
+    Symbol:
+      type: object
+      properties:
+        symbol: { type: string }
+        base: { type: string }
+        quote: { type: string }
+        active: { type: boolean }
+      required: [symbol, base, quote, active]
+
+    Tick:
+      type: object
+      properties:
+        symbol: { type: string }
+        price: { type: number }
+        ts: { type: integer, description: "Unix seconds" }
+        volume:
+          type: number
+          nullable: true
+          description: Per-tick size if available
+      required: [symbol, price, ts]
+
+    CandleItem:
+      type: object
+      description: 1-minute aggregated candle (ascending in responses)
+      properties:
+        symbol: { type: string }
+        ts: { type: integer, description: "Unix seconds (minute bucket start)" }
+        open: { type: number }
+        high: { type: number }
+        low:  { type: number }
+        close:{ type: number }
+        volume: { type: number, description: "Sum of tick volumes within the minute" }
+        sma10:
+          type: number
+          nullable: true
+          description: "SMA(10) over ticks; may be null for early candles"
+      required: [symbol, ts, open, high, low, close, volume]
+
+    TickHistoryResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/CandleItem' }
+        nextCursor:
+          oneOf:
+            - { type: integer }
+            - { type: 'null' }
+      required: [items]
+
+    Metrics:
+      type: object
+      properties:
+        symbol: { type: string }
+        windowStart: { type: integer }
+        windowEnd: { type: integer }
+        count: { type: integer }
+        min: { type: number }
+        max: { type: number }
+        avg: { type: number }
+        vwap: { type: number }
+        volume: { type: number }
+        last: { type: number }
+      required: [symbol, windowStart, windowEnd, count, min, max, avg, last]
+
+    SymbolUpsertRequest:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Symbol' }
+      required: [items]
+
+    SymbolUpsertResponse:
+      type: object
+      properties:
+        upserted: { type: integer }
+        skipped: { type: integer }
+      required: [upserted, skipped]
+
+    TicksIngestRequest:
+      type: object
+      properties:
+        source: { type: string }
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              idempotencyKey: { type: string }
+              symbol: { type: string }
+              price: { type: number }
+              ts: { type: integer, description: "Unix seconds" }
+              volume:
+                type: number
+                nullable: true
+                description: Optional per-tick volume (defaults to 1 if omitted)
+            required: [idempotencyKey, symbol, price, ts]
+      required: [source, items]
+
+    TicksIngestResponse:
+      type: object
+      properties:
+        accepted: { type: integer }
+        duplicates: { type: integer }
+        queued: { type: integer }
+        rejected: { type: integer }
+        skipped: { type: integer }
+      required: [accepted, duplicates, queued, rejected, skipped]
