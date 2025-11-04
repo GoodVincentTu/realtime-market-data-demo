@@ -54,6 +54,14 @@ export const cfg = {
   retry: Math.max(0, Number(process.env.RETRY ?? 3)),
   retryBaseMs: Math.max(50, Number(process.env.RETRY_BASE_MS ?? 150)),
 
-  metricsPort: Number(process.env.METRICS_PORT ?? 9400),
-  opsPort: Number(process.env.OPS_PORT ?? 9303),
+  metricsPort: (() => {
+    const raw = process.env.METRICS_PORT;
+    const val = Number(raw);
+    return Number.isFinite(val) ? val : 0;
+  })(),
+  opsPort: (() => {
+    const raw = process.env.OPS_PORT ?? process.env.PORT;
+    const val = Number(raw);
+    return Number.isFinite(val) ? val : 0;
+  })(),
 } as const;

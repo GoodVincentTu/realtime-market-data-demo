@@ -118,9 +118,13 @@ async function main() {
     logger.warn({ err: e }, 'symbol upsert skipped');
   }
 
-  // start ops/metrics servers
-  metricsServer = startOpsServer(cfg.metricsPort);
-  opsServer = startOpsServer(cfg.opsPort);
+  // start ops/metrics servers if enabled
+  if (cfg.metricsPort > 0) {
+    metricsServer = startOpsServer(cfg.metricsPort);
+  }
+  if (cfg.opsPort > 0) {
+    opsServer = startOpsServer(cfg.opsPort);
+  }
 
   logger.info(
     {
