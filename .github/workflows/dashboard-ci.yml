@@ -52,8 +52,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Ensure dashboard workspace deps
+        run: pnpm --filter @realtime/dashboard install --frozen-lockfile
+
       - name: Unit tests (vitest)
-        run: pnpm --filter @realtime/dashboard test -- --reporter=dot
+        run: pnpm --filter @realtime/dashboard exec vitest run --reporter=dot
 
       - name: Build (Vite)
         run: pnpm --filter @realtime/dashboard build

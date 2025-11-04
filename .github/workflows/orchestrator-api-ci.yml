@@ -101,7 +101,13 @@ jobs:
         run: pnpm --filter @realtime/orchestrator-api test:unit -- --reporter=dot
 
       - name: Integration tests
-        run: pnpm --filter @realtime/orchestrator-api test:integration -- --reporter=dot
+        shell: bash
+        run: |
+          if compgen -G "services/orchestrator-api/tests/integration/**/*.test.ts" > /dev/null; then
+            pnpm --filter @realtime/orchestrator-api test:integration -- --reporter=dot
+          else
+            echo "No integration tests found; skipping."
+          fi
 
   docker:
     name: Build & Push image

@@ -3,7 +3,7 @@ ARG NODE_VERSION=20.12.2
 FROM node:${NODE_VERSION}-alpine AS base
 WORKDIR /app
 RUN apk add --no-cache libc6-compat && corepack enable
-COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml tsconfig.base.json ./
 COPY services/realtime-gateway/package.json services/realtime-gateway/
 RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
     pnpm install --frozen-lockfile

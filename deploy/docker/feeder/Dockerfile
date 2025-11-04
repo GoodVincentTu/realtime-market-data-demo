@@ -3,7 +3,7 @@ ARG NODE_VERSION=20.12.2
 FROM node:${NODE_VERSION}-alpine AS base
 WORKDIR /app
 RUN apk add --no-cache libc6-compat && corepack enable
-COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml tsconfig.base.json ./
 COPY services/feeder/package.json services/feeder/
 COPY services/orchestrator-api/package.json services/orchestrator-api/
 RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
