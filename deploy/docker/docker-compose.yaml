@@ -1,0 +1,121 @@
+version: "3.9"
+
+x-env-common: &env_common
+  NODE_ENV: production
+  TZ: America/Toronto
+
+networks:
+  app: {}
+
+volumes:
+  pgdata: {}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: market
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL","pg_isready -U app -d market"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [app]
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server","--appendonly","no"]
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD","redis-cli","ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [app]
+
+  orchestrator-api:
+    build:
+      context: ../..
+      dockerfile: ./deploy/docker/orchestrator-api/Dockerfile
+    image: local/realtime/orchestrator-api:dev
+    environment:
+      <<: *env_common
+      PORT: "3030"
+      # Postgres / Redis (match your service config keys)
+      DATABASE_URL: postgres://app:app@postgres:5432/market
+      REDIS_URL: redis://redis:6379
+      # webhook auth for feeders
+      API_KEY: dev-key
+      # CORS (if enabled in your app)
+      CORS_ALLOW_ORIGINS: http://localhost:8080,http://localhost:5173
+    ports: ["3030:3030"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [app]
+
+  realtime-gateway:
+    build:
+      context: ../..
+      dockerfile: ./deploy/docker/realtime-gateway/Dockerfile
+    image: local/realtime/realtime-gateway:dev
+    environment:
+      <<: *env_common
+      PORT: "4000"
+      REDIS_URL: redis://redis:6379
+      ALLOW_ORIGINS: http://localhost:8080,http://localhost:5173
+    ports: ["4000:4000"]
+    depends_on:
+      redis: { condition: service_healthy }
+    networks: [app]
+
+  feeder:
+    build:
+      context: ../..
+      dockerfile: ./deploy/docker/feeder/Dockerfile
+    image: local/realtime/feeder:dev
+    environment:
+      <<: *env_common
+      ORCHESTRATOR_BASE_URL: http://orchestrator-api:3030/api/v1
+      ORCHESTRATOR_API_KEY: dev-key
+      SYMBOLS: BTCUSDT,ETHUSDT
+      RPS: "1"
+      BATCH_SIZE: "50"
+      FLUSH_MS: "250"
+      JITTER: "0.2"
+    depends_on:
+      orchestrator-api: { condition: service_started }
+    networks: [app]
+
+  consumers:
+    build:
+      context: ../..
+      dockerfile: ./deploy/docker/consumers/Dockerfile
+    image: local/realtime/consumers:dev
+    environment:
+      <<: *env_common
+      DATABASE_URL: postgres://app:app@postgres:5432/market
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [app]
+
+  dashboard:
+    build:
+      context: ../..
+      dockerfile: ./deploy/docker/dashboard/Dockerfile
+      args:
+        VITE_API_BASE_URL: http://localhost:3030/api/v1
+        VITE_REALTIME_URL: http://localhost:4000/realtime/ticks
+    image: local/realtime/dashboard:dev
+    ports: ["8080:8080"]
+    depends_on:
+      orchestrator-api: { condition: service_started }
+      realtime-gateway: { condition: service_started }
+    networks: [app]
