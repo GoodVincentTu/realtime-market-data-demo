@@ -43,6 +43,7 @@ This system ingests trade ticks, deduplicates and batches them, writes **raw** a
 - **Frontend:** React + Vite + TanStack Query (fast HMR, robust data fetching/caching).  
 - **Realtime:** Server‑Sent Events (SSE) via an independent Realtime Gateway (HTTP‑friendly, simple fanout).  
 - **Storage:** Postgres (row + time‑bucket aggregates) and Redis (idempotency sets, pub/sub).  
+- **Versions**: Node 20+, Postgres 15+, Redis 7+, React 18; chosen for long-term LTS and mature observability tooling.
 - **Why:** The workload is write‑heavy but structured; Postgres handles raw + aggregate tables well (CQs and window funcs). SSE is trivial to scale behind a gateway and reverse proxy. Redis is the right hammer for lightweight dedupe and pub/sub.
 
 ---
@@ -54,6 +55,7 @@ This system ingests trade ticks, deduplicates and batches them, writes **raw** a
   - Bulk copy (multi‑values), connection pooling, partition tables by date.
   - Async aggregation via Consumers only; no sync aggregation in API path.
   - Use Redis streams for back‑pressure; shard consumers by symbol hash.
+  - napkin estimation: 1k tps × 60s ≈ 60k rows/min; with 10–20 symbols we can keep single-row UPSERT hot paths <10 ms using 1–2 connection pools and 5–10k row batch writes.
 - **What breaks first:** DB contention on upserts and view refresh if abused; SSE fanout CPU if message rate spikes.  
 - **For production:** Table partitioning; pgbouncer; vectorized inserts; move to TimescaleDB/PG hypertables; shard Redis; horizontally scale RGW; add circuit‑breakers; SLOs with load‑shedding.
 
@@ -188,7 +190,7 @@ docker compose -f deploy/docker/compose.local.yml logs -f
 
 - Lint + Typecheck + Unit tests per package.  
 - Docker build & (optionally) push to GHCR.  
-- Workflows live in `.github/workflows/*.yml` (see `mono-ci.yml`).
+- Workflows live in `.github/workflows/*.yml` (see e.g. `consumers-ci.yml`).
 
 ---
 
