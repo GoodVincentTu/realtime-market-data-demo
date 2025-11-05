@@ -1,65 +1,270 @@
-# Market Data Demo — Architecture (Implementation / Demo)
 
-## Overview
-This repo demonstrates a simplified market-data style pipeline with separate responsibilities:
+# Realtime Market Data Demo — Architecture & Developer Guide
 
-- **services/feeder**: simulates multiple exchange-like sources and POSTs ticks to the backend (env-driven).
-- **services/orchestrator-api** (previously “api-server”): receives webhook ticks, validates, pushes them to Redis/BullMQ, exposes normal REST endpoints for dashboards, and publishes change events to the realtime service.
-- **services/realtime-gateway** (previously “connection-service”): maintains SSE / WebSocket connections to browser clients and receives update events from orchestrator-api via **Redis pub/sub**.
-- **services/consumers**: BullMQ workers that read from Redis queues, perform domain calculations (calc-a, calc-b), and notify orchestrator-api about new aggregate values.
-- **frontend/dashboard**: Vite/React dashboard that shows live updates and can fetch history via REST.
+> **Scope:** Explains the current design, what’s shipped, what’s deferred, and how to run, test, and deploy.
 
-We deploy everything as separate services so we can scale the hot paths independently.
+## Contents
+- [System Overview](#1-system-overview)
+- [Technology Choices](#2-technology-choices)
+- [Scaling Considerations](#3-scaling-considerations)
+- [Trade‑offs](#4-tradeoffs)
+- [API Contracts (Current)](#5-api-contracts-current)
+- [Data Model (Simplified ER)](#6-data-model-simplified-er)
+- [Folder Structure](#7-folder-structure)
+- [Local Development](#8-local-development)
+- [Tests](#9-tests)
+- [Docker & Compose](#10-docker--compose)
+- [CI/CD (GitHub Actions)](#11-cicd-github-actions)
+- [Render Deployment (Reference)](#12-render-deployment-reference)
+- [Security](#13-security)
+- [Observability](#14-observability)
+- [Assumptions](#15-assumptions)
+- [Deferred Work / Future Improvements](#16-deferred-work--future-improvements)
+- [Appendix — SQL (SMA10 Window)](#17-appendix--sql-sma10-window)
+- [Review Notes](#18-review-notes)
 
-## Dataflow (demo)
-1. **feeder → orchestrator-api**  
-   - `POST /ingest/tick` with `{ symbol, price, volume, ts, source, event_id }`
-   - orchestrator-api **does NOT** write raw ticks directly to Postgres in the fast path to avoid DB IOPS spikes.
-   - orchestrator-api enqueues the tick to Redis/BullMQ (`queue: ticks.received`)
+---
 
-2. **orchestrator-api → realtime-gateway**  
-   - orchestrator-api also publishes an event to Redis pub/sub `md.events` (or `realtime:updates`) so connected clients can see “something changed” immediately.
-   - this is a *soft* fast-path; real aggregates will arrive after calc.
+## 1) System Overview
 
-3. **consumers (calc-a, calc-b)**  
-   - calc-a: consumes `ticks.received`, runs per-symbol/per-window logic, and emits `calcA.done`.
-   - calc-b: consumes `calcA.done` (and/or the original tick) to produce a final view `W`.
-   - calc-b calls **orchestrator-api** `POST /internal/agg-update` so the API can store/update canonical state.
+This system ingests trade ticks, deduplicates and batches them, writes **raw** and **aggregated** data to Postgres, broadcasts **realtime** updates via SSE, and serves **HTTP APIs** to a React dashboard. Redis is used for both idempotency (ingest) and pub/sub (realtime).
 
-4. **orchestrator-api → Postgres (batched)**  
-   - instead of writing every tick 1-by-1, the service keeps **small batches in Redis** and flushes to Postgres on:
-     - timer (e.g. every 1–5s), or
-     - batch size reached (e.g. 200 ticks)
-   - this **risks losing the last batch** if the service dies → we **document** it as a demo trade-off.
+### High‑level Architecture
+![high level](./submission/tick_data_pipeline.svg)
 
-5. **orchestrator-api → realtime-gateway → browser**  
-   - after it receives `agg-update`, orchestrator-api publishes again to Redis pub/sub.
-   - realtime-gateway fans out via SSE/WS to all connected dashboards.
+### Data Flow (End‑to‑end)
+![Data flow](./submission/tick_data_processing.svg)
 
-## Why buffer in Redis first?
-During napkin estimation we saw that even a modest “5–20 ticks/sec × few symbols” can **burst** if:
-- feeder rate is increased
-- we add more symbols
-- we run multiple feeders
+---
 
-Writing **every** tick to Postgres would associate our ingest SLA with DB write performance. To keep the demo responsive, we:
-- **enqueue ticks in Redis first**
-- **flush to Postgres in batches**
-- **accept that we may lose the last batch** (documented)
+## 2) Technology Choices
 
-This is acceptable for the take-home, and we can point to the scalable version in `architecture-scale.md`.
+- **Backend:** Node.js + Express (simplicity, ecosystem, fast iteration).  
+- **Frontend:** React + Vite + TanStack Query (fast HMR, robust data fetching/caching).  
+- **Realtime:** Server‑Sent Events (SSE) via an independent Realtime Gateway (HTTP‑friendly, simple fanout).  
+- **Storage:** Postgres (row + time‑bucket aggregates) and Redis (idempotency sets, pub/sub).  
+- **Why:** The workload is write‑heavy but structured; Postgres handles raw + aggregate tables well (CQs and window funcs). SSE is trivial to scale behind a gateway and reverse proxy. Redis is the right hammer for lightweight dedupe and pub/sub.
 
-## APIs (demo)
-- `POST /ingest/tick`
-- `POST /internal/agg-update`
-- `GET /symbols`
-- `GET /tickets/:symbol`
-- `GET /tickets/:symbol/history?limit=1000`
-- `GET /health/liveness`
-- `GET /health/readiness`
-- `GET /metrics`
+---
 
-## Auth (demo)
-- We will keep a simple `INGEST_USERNAME` / `INGEST_PASSWORD` in env.
-- `POST /ingest/tick` requires basic auth with those credentials.
-- This is enough to show we thought about the trust boundary.
+## 3) Scaling Considerations
+
+- **100 symbols:** Keep one shared batcher; key‑aggregate in memory when possible; tune batch size/flush window.  
+- **1,000 ticks/sec:** First bottleneck is DB write IOPS. Mitigations:
+  - Bulk copy (multi‑values), connection pooling, partition tables by date.
+  - Async aggregation via Consumers only; no sync aggregation in API path.
+  - Use Redis streams for back‑pressure; shard consumers by symbol hash.
+- **What breaks first:** DB contention on upserts and view refresh if abused; SSE fanout CPU if message rate spikes.  
+- **For production:** Table partitioning; pgbouncer; vectorized inserts; move to TimescaleDB/PG hypertables; shard Redis; horizontally scale RGW; add circuit‑breakers; SLOs with load‑shedding.
+
+---
+
+## 4) Trade‑offs
+
+- **Prioritized developer speed** (plain Express + SSE) over advanced brokers (Kafka/NATS).  
+- **Chose Postgres** instead of specialized TSDB to simplify ops; accept need for partitioning and careful indexes.  
+- **Kept SSE stateless** in gateway; punted on presence/rewind semantics.  
+- **Deferred cross‑region replication** and historical backfill service to keep scope focused.
+
+---
+
+## 5) API Contracts
+![api current](./submission/symbol_data_realtime.svg)
+
+**Auth:**  
+- Public `GET` endpoints are open.  
+- Write‑path webhooks require header **`x-api-key`**.  
+- Optional: set `CORS_ALLOW_ORIGINS` in API and `ALLOW_ORIGINS` in RGW.
+
+---
+
+## 6) Data Model (Simplified ER)
+![data model](./submission/market_data_schema.svg)
+
+---
+
+## 7) Folder Structure
+
+```text
+project_root/
+├─ deploy/
+│  ├─ docker/
+│  │  ├─ consumers/
+│  │  ├─ dashboard/
+│  │  ├─ feeder/
+│  │  ├─ orchestrator-api/
+│  │  └─ realtime-gateway/
+│  └─ helm/                  # Helm charts per service
+├─ frontend/
+│  └─ dashboard/             # React + Vite app (static build)
+├─ services/
+│  ├─ consumers/             # Batcher + calc-A/B + DB writers + pub
+│  ├─ feeder/                # Synthetic/webhook feed generator
+│  ├─ orchestrator-api/      # Public APIs + webhooks (write-path)
+│  └─ realtime-gateway/      # SSE fanout from Redis pub/sub
+├─ .dockerignore
+├─ .gitignore
+├─ pnpm-workspace.yaml
+└─ package.json
+```
+
+---
+
+## 8) Local Development
+- Please refer the README.md file directly under the project root folder.
+
+### Dependencies
+- **Node 20+** and **pnpm 9+** (`corepack enable`).
+- **Docker** (for local Postgres/Redis via compose).
+
+### Quick Start (Dev without Docker)
+```bash
+corepack enable pnpm
+pnpm i
+
+# start infra locally (compose)
+docker compose -f deploy/docker/compose.local.yml up -d pg redis
+
+# run orchestrator-api in dev
+pnpm --filter @realtime/orchestrator-api dev
+
+# run realtime-gateway in dev
+pnpm --filter @realtime/realtime-gateway dev
+
+# run consumers
+pnpm --filter @realtime/consumers dev
+
+# run feeder (optional)
+pnpm --filter @realtime/feeder dev
+
+# run dashboard
+pnpm --filter @realtime/dashboard dev
+```
+
+### Environment (Common)
+```
+DATABASE_URL=postgres://user:pass@localhost:5432/market
+REDIS_URL=redis://localhost:6379
+QUEUE_PREFIX=realtime
+TICKS_QUEUE=ticks
+PUBSUB_CHANNEL=ch:ticks
+```
+
+---
+
+## 9) Tests
+
+**Where:** `services/orchestrator-api/tests/unit/`  
+**What:**  
+- `ingest.service.test.ts` — dedupe + enqueue happy path.  
+- `symbols.service.test.ts` — list & upsert.  
+- `ticks.service.test.ts` — `latestTickSvc`, `tickHistorySvc`, `tickHistorySvcV2` (OHLC+SMA10), `aggMetricsSvc`.
+
+**Run:**
+```bash
+pnpm --filter @realtime/orchestrator-api test:unit
+```
+
+---
+
+## 10) Docker & Compose
+
+- Each service has a Dockerfile under `deploy/docker/<service>/`.  
+- Build & run locally:
+```bash
+# build all
+pnpm docker:build:all
+
+# start full stack
+docker compose -f deploy/docker/compose.local.yml up -d
+
+# logs (follow)
+docker compose -f deploy/docker/compose.local.yml logs -f
+```
+
+---
+
+## 11) CI/CD (GitHub Actions)
+
+- Lint + Typecheck + Unit tests per package.  
+- Docker build & (optionally) push to GHCR.  
+- Workflows live in `.github/workflows/*.yml` (see `mono-ci.yml`).
+
+---
+
+## 12) Render Deployment (Reference)
+
+See the **Render Deployment** document in the deploy folder for step‑by‑step env setup, health checks, and build commands. Key URLs:
+- API: `/api/v1/health/readiness`  
+- Gateway: `/health/readiness`  
+- Consumers: `/ops/health/readiness`  
+- Feeder: `/ops/health/readiness`
+
+---
+
+## 13) Security
+
+- `x-api-key` required for `/webhooks/*`.  
+- CORS restricted via env (`CORS_ALLOW_ORIGINS`, `ALLOW_ORIGINS`).  
+- All services expose minimal health/metrics; avoid leaking internals.
+
+---
+
+## 14) Observability
+
+- **Metrics:** Prometheus‑formatted `/ops/metrics` (where enabled).  
+- **Health:** `/health/liveness`, `/health/readiness`.  
+- **Logs:** JSON by default; `LOG_PRETTY=1` locally.
+
+---
+
+## 15) Assumptions
+
+- Ticks are second‑granularity; minute OHLC and SMA10 derived in DB queries.  
+- Volumes may be synthetic or exchange‑provided; aggregation rules are additive per (symbol,bucket).  
+- No rewind on SSE; clients reconnect and refill via `/history`.
+
+---
+
+## 16) Deferred Work / Future Improvements
+
+- Table partitioning & Timescale hypertables.  
+- Replay/rewind via Redis Streams or Kafka.  
+- Snapshot cache for `/history` per `(symbol, cursor, limit)` with TTL.  
+- Rate limiting on webhooks.  
+- Multi‑region active/active.
+
+---
+
+## 17) Appendix — SQL (SMA10 Window)
+
+The **SMA10** is computed over the **last 10 candles** (inclusive) using a window function:
+
+```sql
+WITH cand AS (
+  SELECT
+    o.symbol,
+    o.bucket_start,
+    o.open, o.high, o.low, o.close,
+    COALESCE(m.volume_sum, 0)::double precision AS volume
+  FROM public.ohlc_1m o
+  LEFT JOIN public.metrics_1m m
+    ON m.symbol = o.symbol AND m.bucket_start = o.bucket_start
+  WHERE o.symbol = $1
+    AND o.bucket_start < TO_TIMESTAMP($2)
+  ORDER BY o.bucket_start DESC
+  LIMIT $3
+)
+SELECT
+  c.symbol,
+  EXTRACT(EPOCH FROM c.bucket_start)::bigint AS ts,
+  c.open, c.high, c.low, c.close, c.volume,
+  AVG(c.close) OVER (
+    ORDER BY c.bucket_start
+    ROWS BETWEEN 9 PRECEDING AND CURRENT ROW
+  ) AS sma10
+FROM cand c
+ORDER BY c.bucket_start DESC;
+```
+
+Interpretation: for each row (most recent minute), take the average of the `close` across that row and its **previous 9**, i.e., a 10‑point moving average.
